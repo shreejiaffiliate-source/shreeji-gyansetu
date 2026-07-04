@@ -2,7 +2,7 @@
   <div class="card course-card h-100 shadow-sm" style="background: var(--card-bg); border-radius: 15px;">
     <div class="position-relative">
       {% if course.thumbnail %}
-        <img src="{{ course.thumbnail.url }}" class="card-img-top" style="border-top-left-radius: 15px; border-top-right-radius: 15px; height: 160px; object-fit: cover;" />
+        <img src="{{ course.thumbnail.url }}" class="card-img-top" style="border-top-left-radius: 15px; border-top-right-radius: 15px; height: 160px; object-fit: contain; object-position: center; background: #fff; " />
       {% endif %}
     </div>
 
