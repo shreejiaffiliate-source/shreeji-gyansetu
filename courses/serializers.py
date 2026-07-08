@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import MasterCategory, Course, Module, Lesson, Profile, Carousel, UserLessonProgress
+from .models import LessonQuery, MasterCategory, Course, Module, Lesson, Profile, Carousel, UserLessonProgress
 
 User = get_user_model()
 
@@ -32,6 +32,7 @@ class ProfileSerializer(serializers.ModelSerializer):
         fields = [
             'user_type', 'photo', 'phone_number', 'college_name', 
             'branch', 'enrollment_number', 'qualification', 
+            'experience_years',  # 🚀 YE ADD KARIYE
             'date_of_birth', 'bio', 'is_approved'
         ]
         # Adding English error messages for other fields
@@ -51,16 +52,34 @@ class ProfileSerializer(serializers.ModelSerializer):
         }
 
 class UserSerializer(serializers.ModelSerializer):
-    profile = ProfileSerializer(read_only=True)
+    # 🚀 'read_only=True' hata diya taaki update ho sake
+    profile = ProfileSerializer() 
     profile_photo = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['id', 'username', 'first_name', 'last_name', 'email', 'profile', 'profile_photo']
 
+    def update(self, instance, validated_data):
+        # 1. Profile ka data alag nikalo
+        profile_data = validated_data.pop('profile', None)
+        
+        # 2. User (first_name, last_name) update karo
+        instance.first_name = validated_data.get('first_name', instance.first_name)
+        instance.last_name = validated_data.get('last_name', instance.last_name)
+        instance.save()
+
+        # 3. Profile update karo (experience_years, bio, etc.)
+        if profile_data:
+            profile = instance.profile
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+            
+        return instance
+
     def get_profile_photo(self, request_obj):
         request = self.context.get('request')
-        # Check if profile exists before accessing photo
         if hasattr(request_obj, 'profile') and request_obj.profile.photo:
             photo_url = request_obj.profile.photo.url
             return request.build_absolute_uri(photo_url) if request else photo_url
@@ -145,6 +164,7 @@ class CourseSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'title', 'slug', 'thumbnail', 'description', 
             'price', 'discount_price', 'level', 'is_live',
+            'is_active', # 👈 YAHAN 'is_active' KO ADD KARNA HAI
             'master_category', 'teacher', 'enrollment_count', 'modules', 'is_enrolled', 'progress',
         ]
 
@@ -180,3 +200,21 @@ class SliderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Carousel
         fields = ['id', 'title', 'image', 'link', 'order', 'is_active']
+
+
+# 🚀 FILE KE SABSE NICHE YE NAYA SERIALIZER ADD KAREIN (WEBSITE UNTOUCHED RAHEGI)
+class TeacherLessonQuerySerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.get_full_name', read_only=True)
+    course_name = serializers.CharField(source='lesson.module.course.title', read_only=True)
+    lesson_title = serializers.CharField(source='lesson.title', read_only=True)
+    created_at_formatted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LessonQuery
+        fields = [
+            'id', 'student_name', 'course_name', 'lesson_title', 
+            'question', 'answer', 'is_resolved', 'created_at_formatted'
+        ]
+
+    def get_created_at_formatted(self, obj):
+        return obj.created_at.strftime("%d %b, %Y")

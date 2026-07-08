@@ -135,7 +135,25 @@ urlpatterns = [
 
     # Payment
     path('verify-payment/', verify_payment, name='verify_payment'),
+
+    path('api/teacher/courses/', api_views.TeacherMyCoursesView.as_view(), name='teacher_courses'),
+    # 🚀 API Endpoints section ke andar ye do naye routes add karein:
+    path('api/teacher/queries/', api_views.TeacherQueryListView.as_view(), name='api_teacher_queries'),
+    path('api/teacher/queries/<int:query_id>/reply/', api_views.TeacherReplyQueryAPIView.as_view(), name='api_teacher_reply_query'),
+    # 🚀 Nayi API Add Course ke liye
+    path('api/teacher/course/create/', api_views.TeacherCourseCreateAPIView.as_view(), name='api_teacher_course_create'),
+    # API endpoints section ke andar:
     
+    # Modules manage karne ke liye
+    path('api/teacher/course/<int:course_id>/modules/', api_views.TeacherModuleAPIView.as_view(), name='api_teacher_modules'),
+    
+    # Lesson upload karne ke liye
+    path('api/teacher/module/<int:module_id>/add-lesson/', api_views.TeacherLessonCreateAPIView.as_view(), name='api_teacher_add_lesson'),
+
+    path('api/teacher/course/<int:course_id>/toggle-status/', api_views.TeacherToggleCourseStatusAPIView.as_view(), name='api_toggle_course_status'),
+    path('api/teacher/course/<int:course_id>/delete/', api_views.TeacherDeleteCourseAPIView.as_view(), name='api_delete_course'),   
+    path('api/teacher/course/<int:course_id>/update/', api_views.TeacherCourseUpdateAPIView.as_view(), name='api_update_course'),
+
 ]
 
 if settings.DEBUG:

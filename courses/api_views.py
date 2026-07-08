@@ -6,8 +6,10 @@ from rest_framework.permissions import IsAuthenticated
 # ✅ DRF ke serializers ko alag naam se import karein taaki confusion na ho
 from rest_framework import serializers as drf_serializers 
 
-from .models import Course, MasterCategory, Notification, Profile, Carousel, Lesson, LessonQuery
-from .serializers import CourseSerializer, CategorySerializer, UserSerializer, SliderSerializer
+# Puraane imports ke sath ise check karo ki 'Module' aapke models se import ho raha hai
+from .models import Course, MasterCategory, Notification, Profile, Carousel, Lesson, LessonQuery, Module
+# Yeh line verify karo:
+from .serializers import CourseSerializer, CategorySerializer, ModuleSerializer, UserSerializer, SliderSerializer
 
 from django.db import IntegrityError
 from django.contrib.auth import get_user_model, update_session_auth_hash
@@ -123,12 +125,21 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
             if not user.first_name or user.first_name.strip() == "":
                 raise ValueError("First name cannot be empty.")
 
-            # 4. Update Profile fields
+            # 4. Update Profile fields (Common for both)
             profile.phone_number = profile_data.get('profile.phone_number', profile.phone_number)
             profile.branch = profile_data.get('profile.branch', profile.branch)
             profile.college_name = profile_data.get('profile.college_name', profile.college_name)
             profile.enrollment_number = profile_data.get('profile.enrollment_number', profile.enrollment_number)
             profile.qualification = profile_data.get('profile.qualification', profile.qualification)
+            
+            # 🚀 NAYA CODE (TEACHER KE LIYE)
+            # Student ki profile mein ye value nahi aayegi, toh ye block skip ho jayega (Student Safe hai)
+            exp_val = profile_data.get('profile.experience_years')
+            if exp_val is not None and str(exp_val).strip() != "":
+                try:
+                    profile.experience_years = int(exp_val)
+                except ValueError:
+                    pass # Agar galti se text aa gaya toh error nahi dega, bas ignore karega
             
             dob = profile_data.get('profile.date_of_birth')
             if dob and dob.strip():
@@ -168,6 +179,9 @@ class UserRegistrationView(APIView):
         last_name = data.get('lastName', '')   # Flutter sends lastName
         user_type = data.get('userType', 'Student') # Flutter sends userType
 
+        # ✅ Flutter ke userType ko model ke Role enum se match karein
+        role_value = "TEACHER" if user_type == 'Teacher' else "STUDENT"
+
         if not username or not password:
             return Response({"error": "Username and password are required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -178,12 +192,14 @@ class UserRegistrationView(APIView):
             return Response({"error": "Email already registered"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            # ✅ Yahan create_user mein 'role' field add karein
             user = User.objects.create_user(
                 username=username,
                 password=password,
                 email=email,
                 first_name=first_name,
-                last_name=last_name
+                last_name=last_name,
+                role=role_value  # <--- Ye nayi line add karni hai
             )
 
             # ✅ Profile setup (Safe way)
@@ -375,3 +391,241 @@ class UpdateFCMTokenView(APIView):
         profile.save()
         
         return Response({"message": "FCM Token updated successfully"}, status=200)
+    
+class TeacherMyCoursesView(generics.ListAPIView):
+    
+    serializer_class = CourseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # ✅ FIX: is_active=True hata diya. Ab Teacher ko apne saare courses (Draft + Published) dikhenge
+        return Course.objects.filter(
+            teacher=self.request.user 
+        ).order_by('-id')
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context.update({"request": self.request})
+        return context
+    
+# 🚀 FILE KE END MEIN ADD KAREIN
+from .serializers import TeacherLessonQuerySerializer
+from .models import LessonQuery
+
+class TeacherQueryListView(generics.ListAPIView):
+    serializer_class = TeacherLessonQuerySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # Sirf wahi queries nikalenge jahan course ka teacher current login user hai
+        return LessonQuery.objects.filter(
+            lesson__module__course__teacher=self.request.user
+        ).order_by('-created_at')
+
+class TeacherReplyQueryAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, query_id):
+        try:
+            # Query dhoondhein aur check karein ki ye isi teacher ke liye hai ya nahi
+            query = LessonQuery.objects.get(id=query_id, lesson__module__course__teacher=request.user)
+            answer_text = request.data.get('answer')
+
+            if not answer_text or answer_text.strip() == "":
+                return Response({"error": "Answer text cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+            query.answer = answer_text
+            query.is_resolved = True
+            query.save()
+
+            return Response({"message": "Reply submitted successfully", "is_resolved": True}, status=status.HTTP_200_OK)
+        except LessonQuery.DoesNotExist:
+            return Response({"error": "Query not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils.text import slugify
+import uuid
+
+class TeacherCourseCreateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser] # Image upload ke liye zaroori hai
+
+    def post(self, request):
+        # 1. Security Check: Sirf approved teachers hi course add kar sakte hain
+        if request.user.profile.user_type != 'Teacher' or not request.user.profile.is_approved:
+            return Response({"error": "Only approved teachers can create courses."}, status=status.HTTP_403_FORBIDDEN)
+
+        data = request.data
+        title = data.get('title')
+        description = data.get('description')
+        price = data.get('price', 0)
+        category_id = data.get('master_category_id') 
+        thumbnail = request.FILES.get('thumbnail')
+        level = data.get('level', 'Beginner')
+
+        if not title or not category_id:
+            return Response({"error": "Title and Category are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            category = MasterCategory.objects.get(id=category_id)
+            
+            # Unique Slug generate karein taaki URL clash na ho
+            base_slug = slugify(title)
+            unique_slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
+
+            course = Course.objects.create(
+                title=title,
+                slug=unique_slug,
+                description=description,
+                price=price,
+                level=level,
+                master_category=category,
+                teacher=request.user,
+                thumbnail=thumbnail,
+                is_active=False # Naya course by default Draft/Inactive rahega
+            )
+            return Response({"message": "Course created successfully! Now you can add modules and lessons.", "course_id": course.id}, status=status.HTTP_201_CREATED)
+            
+        except MasterCategory.DoesNotExist:
+            return Response({"error": "Invalid Category selected."}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+# 🚀 1. MODULE (Chapter) CREATE & LIST KARNE KI API
+class TeacherModuleAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, course_id):
+        # Teacher ko uske course ke modules dikhane ke liye
+        try:
+            course = Course.objects.get(id=course_id, teacher=request.user)
+            modules = Module.objects.filter(course=course).order_by('order')
+            # Assuming ModuleSerializer is already in serializers.py
+            serializer = ModuleSerializer(modules, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+
+    def post(self, request, course_id):
+        # Naya Module Add karne ke liye
+        try:
+            course = Course.objects.get(id=course_id, teacher=request.user)
+            title = request.data.get('title')
+            order = request.data.get('order', 0)
+
+            if not title:
+                return Response({"error": "Module title is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+            module = Module.objects.create(
+                course=course,
+                master_category=course.master_category,
+                title=title,
+                order=order
+            )
+            return Response({"message": "Module created successfully", "module_id": module.id}, status=status.HTTP_201_CREATED)
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+
+
+# 🚀 2. LESSON (Video + PDF) UPLOAD KARNE KI API
+class TeacherLessonCreateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser] # Video/PDF upload karne ke liye
+
+    def post(self, request, module_id):
+        try:
+            module = Module.objects.get(id=module_id, course__teacher=request.user)
+            
+            title = request.data.get('title')
+            lesson_type = request.data.get('lesson_type', 'Video')
+            video_url = request.data.get('video_url', '')
+            resources = request.data.get('resources', '')
+            
+            # File Uploads
+            content_file = request.FILES.get('content_file') # MP4 Video
+            notes_file = request.FILES.get('notes_file')     # PDF Notes
+            
+            # Boolean Toggle
+            is_preview = str(request.data.get('is_preview')).lower() == 'true'
+
+            if not title:
+                return Response({"error": "Lesson title is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+            lesson = Lesson.objects.create(
+                module=module,
+                course=module.course,
+                title=title,
+                lesson_type=lesson_type,
+                video_url=video_url,
+                content_file=content_file,
+                notes_file=notes_file,
+                resources=resources,
+                is_preview=is_preview,
+                lecturer_name=request.user.get_full_name() or request.user.username
+            )
+            return Response({"message": "Lesson uploaded successfully!", "lesson_id": lesson.id}, status=status.HTTP_201_CREATED)
+
+        except Module.DoesNotExist:
+            return Response({"error": "Module not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# 🚀 PUBLISH / UNPUBLISH API
+class TeacherToggleCourseStatusAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, course_id):
+        try:
+            course = Course.objects.get(id=course_id, teacher=request.user)
+            course.is_active = not course.is_active
+            course.save()
+            return Response({"message": "Status updated", "is_active": course.is_active}, status=status.HTTP_200_OK)
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found"}, status=status.HTTP_404_NOT_FOUND)
+
+# 🚀 DELETE COURSE API
+class TeacherDeleteCourseAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, course_id):
+        try:
+            course = Course.objects.get(id=course_id, teacher=request.user)
+            course.delete()
+            return Response({"message": "Course deleted successfully"}, status=status.HTTP_200_OK)
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+# 🚀 EDIT COURSE API
+class TeacherCourseUpdateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, course_id):
+        try:
+            course = Course.objects.get(id=course_id, teacher=request.user)
+
+            # Update fields if provided
+            course.title = request.data.get('title', course.title)
+            course.description = request.data.get('description', course.description)
+            course.price = request.data.get('price', course.price)
+            course.level = request.data.get('level', course.level)
+
+            category_id = request.data.get('master_category_id')
+            if category_id:
+                try:
+                    course.master_category = MasterCategory.objects.get(id=category_id)
+                except MasterCategory.DoesNotExist:
+                    pass # Invalid category ko ignore kar denge
+
+            # Agar nayi image aayi hai tabhi update karenge
+            thumbnail = request.FILES.get('thumbnail')
+            if thumbnail:
+                course.thumbnail = thumbnail
+
+            course.save()
+            return Response({"message": "Course updated successfully!"}, status=status.HTTP_200_OK)
+
+        except Course.DoesNotExist:
+            return Response({"error": "Course not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

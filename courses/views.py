@@ -1247,28 +1247,53 @@ def api_register(request):
         return Response({"error": f"Failed to send email: {str(e)}"}, status=500)
     
 # --- API: VERIFY OTP ---
+# --- API: VERIFY OTP ---
 @api_view(['POST'])
+@permission_classes([AllowAny]) # ✅ Ise AllowAny zaroor rakhein
 def api_verify_email(request):
     """
-    Verifies the 6-digit OTP and activates the user account.
+    Verifies the 6-digit OTP from PendingRegistration and activates the user account.
     """
     email = request.data.get('email')
     otp = request.data.get('otp')
 
     try:
-        user = User.objects.get(email=email)
-        profile = user.profile
+        # 1. User ko PendingRegistration table mein dhoondho
+        pending_user = PendingRegistration.objects.get(email=email)
 
-        if profile.email_verification_token == otp:
-            profile.is_email_verified = True
-            profile.email_verification_token = None # Clear OTP after success
-            profile.save()
-
-            user.is_active = True # Activate user
+        # 2. OTP match karo
+        if pending_user.otp == otp:
+            # 3. Asli User create karo
+            user = User.objects.create_user(
+                username=pending_user.username,
+                email=pending_user.email,
+                password=pending_user.password, # Note: Raw password hi pass karna, create_user khud hash kar dega
+                first_name=pending_user.first_name,
+                last_name=pending_user.last_name,
+            )
+            user.is_active = True
             user.save()
 
-            # Generate Token for Flutter so they can login immediately
+            # 4. Profile setup karo
+            profile, _ = Profile.objects.get_or_create(user=user)
+            profile.user_type = pending_user.user_type
+            profile.is_email_verified = True
+
+            if pending_user.user_type == 'Teacher':
+                profile.qualification = pending_user.qualification
+                profile.experience_years = pending_user.experience_years
+                profile.is_approved = False
+            else:
+                profile.is_approved = True
+
+            profile.save()
+
+            # 5. Kaam hone ke baad Pending record delete kar do
+            pending_user.delete()
+
+            # 6. Flutter ke liye Token generate karo
             token, _ = Token.objects.get_or_create(user=user)
+
             return Response({
                 "message": "Email verified successfully!",
                 "token": token.key,
@@ -1277,8 +1302,9 @@ def api_verify_email(request):
             }, status=200)
         else:
             return Response({"error": "Invalid OTP"}, status=400)
-    except User.DoesNotExist:
-        return Response({"error": "User not found"}, status=404)
+
+    except PendingRegistration.DoesNotExist:
+        return Response({"error": "User not found or already verified. Please register again."}, status=404)
 
 # --- API: GOOGLE SIGN-IN ---
 @api_view(['POST'])
@@ -1407,40 +1433,55 @@ def api_login(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def api_resend_otp(request):
+    email = request.data.get('email')
+
+    if not email:
+        return Response({"error": "Email is required"}, status=400)
+
     try:
-        email = request.data.get('email')
+        # Case 1: Check in PendingRegistration (Naye registration ke liye)
+        pending_user = PendingRegistration.objects.filter(email=email).first()
+
+        if pending_user:
+            otp = generate_otp()
+            pending_user.otp = otp
+            pending_user.save()
+            
+            send_mail(
+                subject='Your New OTP - Shreeji GyanSetu',
+                message=f'Hi {pending_user.first_name}, your new verification code is: {otp}',
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+            return Response({"message": "New OTP sent successfully!"}, status=200)
+
+        # Case 2: Check in Main User table (Forgot Password ke liye)
         user = User.objects.filter(email=email).first()
 
-        if not user:
-            return Response({"error": "User not found"}, status=404)
+        if user:
+            # Ensure profile exists
+            profile, _ = Profile.objects.get_or_create(user=user)
+            
+            otp = generate_otp()
+            profile.email_verification_token = otp
+            profile.save()
 
-        # ✅ Check agar profile exist karti hai
-        try:
-            profile = user.profile
-        except Exception:
-            # Agar profile nahi hai toh yahan create kar sakte hain
-            from .models import Profile # Apna model import karein
-            profile = Profile.objects.create(user=user)
+            send_mail(
+                subject='Your New OTP - Shreeji GyanSetu',
+                message=f'Hi {user.first_name}, your new verification code is: {otp}',
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+            return Response({"message": "New OTP sent successfully!"}, status=200)
 
-        # Naya OTP generate karo
-        otp = generate_otp()
-        profile.email_verification_token = otp
-        profile.save()
-
-        # Email bhejna
-        send_mail(
-            subject='Your New OTP - Shreeji GyanSetu',
-            message=f'Your new verification code is: {otp}',
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=False,
-        )
-        return Response({"message": "New OTP sent successfully!"}, status=200)
+        # Agar dono me nahi mila
+        return Response({"error": "User not found. Please register first."}, status=404)
 
     except Exception as e:
-        # ✅ Yeh line aapko terminal mein asli error batayegi
-        print(f"CRITICAL ERROR IN OTP: {str(e)}") 
-        return Response({"error": str(e)}, status=500)
+        print(f"CRITICAL ERROR IN RESEND OTP: {str(e)}") 
+        return Response({"error": "Failed to resend OTP. Please try again later."}, status=500)
     
 @api_view(['POST'])
 @permission_classes([AllowAny])
