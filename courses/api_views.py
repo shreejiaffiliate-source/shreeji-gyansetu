@@ -628,4 +628,37 @@ class TeacherCourseUpdateAPIView(APIView):
         except Course.DoesNotExist:
             return Response({"error": "Course not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)    
+
+# 🚀 EDIT LESSON API
+class TeacherLessonUpdateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, lesson_id):
+        try:
+            # Check if lesson belongs to the teacher
+            lesson = Lesson.objects.get(id=lesson_id, module__course__teacher=request.user)
+
+            lesson.title = request.data.get('title', lesson.title)
+            lesson.lesson_type = request.data.get('lesson_type', lesson.lesson_type)
+            lesson.video_url = request.data.get('video_url', lesson.video_url)
+            lesson.resources = request.data.get('resources', lesson.resources)
+            
+            is_preview = request.data.get('is_preview')
+            if is_preview is not None:
+                lesson.is_preview = str(is_preview).lower() == 'true'
+
+            # Update files if new ones are provided
+            if 'content_file' in request.FILES:
+                lesson.content_file = request.FILES['content_file']
+            if 'notes_file' in request.FILES:
+                lesson.notes_file = request.FILES['notes_file']
+
+            lesson.save()
+            return Response({"message": "Lesson updated successfully!"}, status=status.HTTP_200_OK)
+
+        except Lesson.DoesNotExist:
+            return Response({"error": "Lesson not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

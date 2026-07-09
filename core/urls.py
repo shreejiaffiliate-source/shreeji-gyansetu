@@ -153,6 +153,8 @@ urlpatterns = [
     path('api/teacher/course/<int:course_id>/toggle-status/', api_views.TeacherToggleCourseStatusAPIView.as_view(), name='api_toggle_course_status'),
     path('api/teacher/course/<int:course_id>/delete/', api_views.TeacherDeleteCourseAPIView.as_view(), name='api_delete_course'),   
     path('api/teacher/course/<int:course_id>/update/', api_views.TeacherCourseUpdateAPIView.as_view(), name='api_update_course'),
+    path('api/teacher/lesson/<int:lesson_id>/update/', api_views.TeacherLessonUpdateAPIView.as_view(), name='api_update_lesson'),
+
 
 ]
 
