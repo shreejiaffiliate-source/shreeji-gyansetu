@@ -608,7 +608,12 @@ class TeacherLessonCreateAPIView(APIView):
         except Module.DoesNotExist:
             return Response({"error": "Module not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # 🔥 Yahan traceback print hoga tere server console pe! Isko dhyan se dekhna!
+            import traceback
+            traceback.print_exc()
+            
+            # 🔥 Aur yahan error ka exact message app ko bhejenge
+            return Response({"error": f"Upload failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # 🚀 PUBLISH / UNPUBLISH API
 class TeacherToggleCourseStatusAPIView(APIView):
@@ -767,7 +772,6 @@ class ForgotPasswordView(APIView):
             traceback.print_exc()
             return Response({"error": "Server crashed. Check Django terminal."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-# 🚀 NAYI API: Reset Password (Naya password set karne ke liye)
 class ResetPasswordView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -776,32 +780,44 @@ class ResetPasswordView(APIView):
         otp = request.data.get('otp')
         new_password = request.data.get('password')
 
-        if not email or not otp or not new_password:
-            return Response({"error": "Email, OTP and new password are required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not email or not otp:
+            return Response({"error": "Email and OTP are required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             user = User.objects.get(email=email)
             profile = user.profile
 
-            # 1. Check if OTP matches
-            if profile.email_verification_token != otp:
+            db_token = str(profile.email_verification_token).strip() if profile.email_verification_token else ""
+            sent_token = str(otp).strip()
+
+            # 🔥 YE 5 LINES TERMINAL MEIN SACH BATA DENGIEE
+            print("\n=========================================")
+            print(f"🚨 CHECKING OTP FOR: {email}")
+            print(f"📩 APP SE AAYA (User ne dala): '{sent_token}'")
+            print(f"💾 DATABASE MEIN SAVE HAI: '{db_token}'")
+            print("=========================================\n")
+
+            if db_token != sent_token or not db_token:
+                print("❌ OTP MATCH NAHI HUA! REJECT KAR RAHA HU (400)!\n")
                 return Response({"error": "Invalid OTP. Please try again."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 2. Check if OTP is expired (e.g., 15 minutes validity)
+            print("✅ OTP PERFECT MATCH HO GAYA!\n")
+
             if profile.token_created_at:
+                from datetime import timedelta
+                from django.utils import timezone
                 expiry_time = profile.token_created_at + timedelta(minutes=15)
                 if timezone.now() > expiry_time:
-                    return Response({"error": "OTP has expired. Please request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"error": "OTP has expired."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 3. Set New Password
-            user.set_password(new_password)
-            user.save()
+            if new_password:
+                user.set_password(new_password)
+                user.save()
+                profile.email_verification_token = None
+                profile.save()
+                return Response({"message": "Password reset successfully. You can now login."}, status=status.HTTP_200_OK)
 
-            # 4. Clear the OTP so it can't be used again
-            profile.email_verification_token = None
-            profile.save()
-
-            return Response({"message": "Password reset successfully. You can now login."}, status=status.HTTP_200_OK)
+            return Response({"message": "OTP is valid."}, status=status.HTTP_200_OK)
 
         except User.DoesNotExist:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)

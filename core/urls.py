@@ -57,7 +57,7 @@ urlpatterns = [
     path('login-success/', login_success, name='login_success'),
     path('register/', register, name='register'),
     path('register/verify/', verify_email_web, name='verify_email_web'),
-    path('api/reset-password/', api_reset_password, name='api_reset_password'),
+    #path('api/reset-password/', api_reset_password, name='api_reset_password'),
     path('verify-otp/', verify_email_web, name='verify_email_web'),
     path('reset-password/', reset_password_web, name='reset_password_web'),
     
