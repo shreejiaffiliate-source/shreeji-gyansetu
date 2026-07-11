@@ -1,3 +1,8 @@
+from datetime import timedelta
+from django.utils import timezone
+import random
+from django.core.mail import send_mail
+from django.conf import settings
 from rest_framework import generics, permissions, status, decorators
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -18,6 +23,9 @@ from django.views.decorators.cache import never_cache
 import razorpay
 from django.conf import settings
 from django.db.models import Count
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils.text import slugify
+import uuid
 
 User = get_user_model()
 
@@ -110,8 +118,36 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+    
+    def patch(self, request, *args, **kwargs):
+        print("========== PATCH DATA ==========")
+        print(request.data)
+        print(request.FILES)
+        return super().patch(request, *args, **kwargs)
+    
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+
+        instance = self.get_object()
+
+        serializer = self.get_serializer(
+            instance,
+            data=request.data,
+            partial=partial,
+        )
+
+        if not serializer.is_valid():
+            print("========== SERIALIZER ERRORS ==========")
+            print(serializer.errors)
+            return Response(serializer.errors, status=400)
+
+        self.perform_update(serializer)
+
+        return Response(serializer.data)
 
     def perform_update(self, serializer):
+        print("DATA:", self.request.data)
+        print("FILES:", self.request.FILES)
         try:
             # 1. Save the basic user data (first_name, last_name, email)
             user = serializer.save()
@@ -448,10 +484,9 @@ import uuid
 
 class TeacherCourseCreateAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser] # Image upload ke liye zaroori hai
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        # 1. Security Check: Sirf approved teachers hi course add kar sakte hain
         if request.user.profile.user_type != 'Teacher' or not request.user.profile.is_approved:
             return Response({"error": "Only approved teachers can create courses."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -459,6 +494,12 @@ class TeacherCourseCreateAPIView(APIView):
         title = data.get('title')
         description = data.get('description')
         price = data.get('price', 0)
+        
+        # 🚀 FIX: Discount price nikal rahe hain
+        discount_price = data.get('discount_price')
+        if discount_price == '' or discount_price == 'null':
+            discount_price = None
+
         category_id = data.get('master_category_id') 
         thumbnail = request.FILES.get('thumbnail')
         level = data.get('level', 'Beginner')
@@ -468,8 +509,6 @@ class TeacherCourseCreateAPIView(APIView):
 
         try:
             category = MasterCategory.objects.get(id=category_id)
-            
-            # Unique Slug generate karein taaki URL clash na ho
             base_slug = slugify(title)
             unique_slug = f"{base_slug}-{uuid.uuid4().hex[:6]}"
 
@@ -478,13 +517,14 @@ class TeacherCourseCreateAPIView(APIView):
                 slug=unique_slug,
                 description=description,
                 price=price,
+                discount_price=discount_price, # 🚀 FIX: Yahan Save Hoga
                 level=level,
-                master_category=category,
+                master_category=category,      # 🚀 FIX: Category yahan attach ho rahi hai
                 teacher=request.user,
                 thumbnail=thumbnail,
-                is_active=False # Naya course by default Draft/Inactive rahega
+                is_active=False
             )
-            return Response({"message": "Course created successfully! Now you can add modules and lessons.", "course_id": course.id}, status=status.HTTP_201_CREATED)
+            return Response({"message": "Course created successfully!", "course_id": course.id}, status=status.HTTP_201_CREATED)
             
         except MasterCategory.DoesNotExist:
             return Response({"error": "Invalid Category selected."}, status=status.HTTP_400_BAD_REQUEST)
@@ -604,20 +644,27 @@ class TeacherCourseUpdateAPIView(APIView):
         try:
             course = Course.objects.get(id=course_id, teacher=request.user)
 
-            # Update fields if provided
             course.title = request.data.get('title', course.title)
             course.description = request.data.get('description', course.description)
             course.price = request.data.get('price', course.price)
             course.level = request.data.get('level', course.level)
 
+            # 🚀 FIX: Discount Price Update
+            discount = request.data.get('discount_price')
+            if discount is not None:
+                if str(discount).strip() == '' or str(discount) == 'null':
+                    course.discount_price = None
+                else:
+                    course.discount_price = discount
+
+            # 🚀 FIX: Category Update
             category_id = request.data.get('master_category_id')
             if category_id:
                 try:
                     course.master_category = MasterCategory.objects.get(id=category_id)
                 except MasterCategory.DoesNotExist:
-                    pass # Invalid category ko ignore kar denge
+                    pass
 
-            # Agar nayi image aayi hai tabhi update karenge
             thumbnail = request.FILES.get('thumbnail')
             if thumbnail:
                 course.thumbnail = thumbnail
@@ -660,5 +707,103 @@ class TeacherLessonUpdateAPIView(APIView):
 
         except Lesson.DoesNotExist:
             return Response({"error": "Lesson not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+# 🚀 DELETE LESSON API
+class TeacherLessonDeleteAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, lesson_id):
+        try:
+            # Check if lesson belongs to the teacher
+            lesson = Lesson.objects.get(id=lesson_id, module__course__teacher=request.user)
+            lesson.delete()
+            return Response({"message": "Lesson deleted successfully!"}, status=status.HTTP_200_OK)
+        except Lesson.DoesNotExist:
+            return Response({"error": "Lesson not found or unauthorized"}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+import traceback # Ise file ke top par add kar lena
+
+class ForgotPasswordView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        try:
+            email = request.data.get('email')
+            if not email:
+                return Response({"error": "Email is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+            user = User.objects.filter(email=email).first()
+            if not user:
+                return Response({"error": "No user found with this email address."}, status=status.HTTP_404_NOT_FOUND)
+
+            otp = str(random.randint(100000, 999999))
+            
+            # 🚀 ASLI FIX: Profile missing crash fix
+            profile, created = Profile.objects.get_or_create(user=user)
+            profile.email_verification_token = otp
+            profile.token_created_at = timezone.now() 
+            profile.save()
+
+            try:
+                subject = 'Password Reset OTP - Shreeji GyanSetu'
+                message = f'Hello {user.first_name},\n\nYour OTP for password reset is: {otp}\n\nThis OTP is valid for 15 minutes.'
+                send_mail(subject, message, settings.EMAIL_HOST_USER, [email], fail_silently=False)
+                return Response({"message": "OTP sent successfully to your email."}, status=status.HTTP_200_OK)
+            except Exception as mail_error:
+                # 🔥 DEV HACK
+                print("==================================================")
+                print(f"🚨 EMAIL NAHI GAYA! ERROR: {mail_error}")
+                print(f"🔑 APP MEIN YE OTP DAAL DE: {otp}")
+                print("==================================================")
+                return Response({"message": "Email failed, but you can use terminal OTP."}, status=status.HTTP_200_OK)
+
+        except Exception as main_error:
+            print("🚨🚨🚨 FATAL CRASH IN FORGOT PASSWORD 🚨🚨🚨")
+            traceback.print_exc()
+            return Response({"error": "Server crashed. Check Django terminal."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# 🚀 NAYI API: Reset Password (Naya password set karne ke liye)
+class ResetPasswordView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+        otp = request.data.get('otp')
+        new_password = request.data.get('password')
+
+        if not email or not otp or not new_password:
+            return Response({"error": "Email, OTP and new password are required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email)
+            profile = user.profile
+
+            # 1. Check if OTP matches
+            if profile.email_verification_token != otp:
+                return Response({"error": "Invalid OTP. Please try again."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 2. Check if OTP is expired (e.g., 15 minutes validity)
+            if profile.token_created_at:
+                expiry_time = profile.token_created_at + timedelta(minutes=15)
+                if timezone.now() > expiry_time:
+                    return Response({"error": "OTP has expired. Please request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 3. Set New Password
+            user.set_password(new_password)
+            user.save()
+
+            # 4. Clear the OTP so it can't be used again
+            profile.email_verification_token = None
+            profile.save()
+
+            return Response({"message": "Password reset successfully. You can now login."}, status=status.HTTP_200_OK)
+
+        except User.DoesNotExist:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

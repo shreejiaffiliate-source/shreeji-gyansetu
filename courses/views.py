@@ -1378,52 +1378,55 @@ def api_google_login(request):
         "message": "Google login successful"
     }, status=200) 
 
-# --- NEW API LOGIN: SUPPORT USERNAME OR EMAIL ---
+from rest_framework import status
+
+# --- NORMAL API LOGIN: BINA ACCESS DENIED KE ---
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def api_login(request):
     """
-    Handles login using either Username OR Email.
+    Handles login using either Username OR Email without strict role blocking.
     """
     login_id = request.data.get('login_id', '').strip() # Field name from Flutter
-    print(f"DEBUG: Searching for ID -> '{login_id}'")
-
-    exists = User.objects.filter(email__iexact=login_id).exists()
-    print(f"DEBUG: Does Email Exist? -> {exists}")
-    
-      
     password = request.data.get('password')
+
+    print(f"DEBUG: Searching for ID -> '{login_id}'")
 
     if not login_id or not password:
         return Response({"error": "Please provide both credentials"}, status=400)
 
     # Search for user by username OR email using Q object
-    clean_id = login_id.strip() if login_id else ""
-    user = User.objects.filter(Q(username__iexact=clean_id) | Q(email__iexact=clean_id)).first()
-
-    if user:
-        # ✅ FIX: Check karo kya user Active hai?
-        if not user.is_active:
-             return Response({
-                "error": "Email not verified. Please verify your email first.",
-                "needs_verification": True # Flutter ko hint dene ke liye
-            }, status=403)
+    from django.db.models import Q
+    user = User.objects.filter(Q(username__iexact=login_id) | Q(email__iexact=login_id)).first()
 
     if user:
         if user.check_password(password):
-            # Check if email is verified
+            # 1. Check if Email is verified
             if hasattr(user, 'profile') and not user.profile.is_email_verified:
-                return Response({"error": "Email not verified. Please verify your email first."}, status=403)
+                return Response({
+                    "error": "Email not verified. Please verify your email first.",
+                    "needs_verification": True # Flutter ko hint dene ke liye
+                }, status=403)
             
+            # 2. Check if Account is Active
             if not user.is_active:
                 return Response({"error": "This account is inactive."}, status=403)
 
-            # Generate or get Auth Token
+            actual_role = user.profile.user_type if hasattr(user, 'profile') else 'Student'
+
+            # 3. 🚀 TEACHER APPROVAL CHECK (Ye zaroori hai taaki unapproved teacher course na daal sake)
+            if actual_role == 'Teacher' and hasattr(user, 'profile') and not user.profile.is_approved:
+                return Response({
+                    "error": "Your account is pending admin approval. Please wait for the confirmation."
+                }, status=403)
+
+            # ✅ YAHAN SE ROLE CHECK NIKAL DIYA HAI! Seedha Token Generate Hoga
             token, _ = Token.objects.get_or_create(user=user)
+
             return Response({
                 "token": token.key,
                 "username": user.username,
-                "user_type": user.profile.user_type if hasattr(user, 'profile') else 'Student'
+                "user_type": actual_role
             }, status=200)
         else:
             return Response({"error": "Invalid password"}, status=400)
@@ -1483,26 +1486,52 @@ def api_resend_otp(request):
         print(f"CRITICAL ERROR IN RESEND OTP: {str(e)}") 
         return Response({"error": "Failed to resend OTP. Please try again later."}, status=500)
     
+import traceback # Ise top par add karna mat bhoolna
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def api_forgot_password(request):
-    email = request.data.get('email')
-    user = User.objects.filter(email=email).first()
-    
-    if not user:
-        return Response({"error": "No user found with this email"}, status=404)
+    try:
+        email = request.data.get('email')
+        if not email:
+            return Response({"error": "Email is required"}, status=400)
+
+        user = User.objects.filter(email=email).first()
+        if not user:
+            return Response({"error": "No user found with this email"}, status=404)
+            
+        # 🚀 ASLI FIX: Agar profile nahi hai toh crash hone ke bajaye nayi banao
+        profile, created = Profile.objects.get_or_create(user=user)
         
-    otp = generate_otp()
-    user.profile.email_verification_token = otp
-    user.profile.save()
-    
-    send_mail(
-        'Password Reset OTP - Shreeji GyanSetu',
-        f'Your code to reset password is: {otp}',
-        settings.DEFAULT_FROM_EMAIL,
-        [email]
-    )
-    return Response({"message": "OTP sent successfully"})
+        # OTP Generate aur Save karo
+        otp = generate_otp()
+        profile.email_verification_token = otp
+        profile.save()
+        
+        try:
+            send_mail(
+                'Password Reset OTP - Shreeji GyanSetu',
+                f'Your code to reset password is: {otp}',
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                fail_silently=False
+            )
+            return Response({"message": "OTP sent successfully"}, status=200)
+            
+        except Exception as mail_error:
+            # 🔥 DEV HACK: Agar email fail bhi hua, toh Flutter app aage badh jayega
+            print("==================================================")
+            print(f"🚨 EMAIL NAHI GAYA! ERROR: {mail_error}")
+            print(f"🔑 APP MEIN YE OTP DAAL DE: {otp}")
+            print("==================================================")
+            # Status 200 bheja hai taaki app na ruke aur tu development karta rahe
+            return Response({"message": "Email failed, but you can use terminal OTP.", "otp": otp}, status=200)
+
+    except Exception as main_error:
+        # Agar iske alawa koi bhi error aaya toh pura Traceback laal rang mein print hoga
+        print("🚨🚨🚨 FATAL CRASH IN FORGOT PASSWORD 🚨🚨🚨")
+        traceback.print_exc() 
+        return Response({"error": "Server crashed. Check Django terminal."}, status=500)
 
 @api_view(['POST'])
 @permission_classes([AllowAny])

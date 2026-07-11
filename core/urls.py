@@ -154,6 +154,9 @@ urlpatterns = [
     path('api/teacher/course/<int:course_id>/delete/', api_views.TeacherDeleteCourseAPIView.as_view(), name='api_delete_course'),   
     path('api/teacher/course/<int:course_id>/update/', api_views.TeacherCourseUpdateAPIView.as_view(), name='api_update_course'),
     path('api/teacher/lesson/<int:lesson_id>/update/', api_views.TeacherLessonUpdateAPIView.as_view(), name='api_update_lesson'),
+    path('api/teacher/lesson/<int:lesson_id>/delete/', api_views.TeacherLessonDeleteAPIView.as_view(), name='api_delete_lesson'),
+    path('api/forgot-password/', api_views.ForgotPasswordView.as_view(), name='api_forgot_password'),
+    path('api/reset-password/', api_views.ResetPasswordView.as_view(), name='api_reset_password'),
 
 
 ]

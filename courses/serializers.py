@@ -11,16 +11,13 @@ class CategorySerializer(serializers.ModelSerializer):
 
 from rest_framework import validators # Ye import zaroori hai
 
+from rest_framework import serializers
+from .models import Profile
+
 class ProfileSerializer(serializers.ModelSerializer):
-    # Custom validation for Enrollment Number to show English message
+
     enrollment_number = serializers.CharField(
         required=True,
-        validators=[
-            validators.UniqueValidator(
-                queryset=Profile.objects.all(),
-                message="This enrollment number is already registered. Please use a unique one."
-            )
-        ],
         error_messages={
             "blank": "Enrollment number cannot be empty.",
             "required": "Please provide your enrollment number."
@@ -30,59 +27,60 @@ class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         fields = [
-            'user_type', 'photo', 'phone_number', 'college_name', 
-            'branch', 'enrollment_number', 'qualification', 
-            'experience_years',  # 🚀 YE ADD KARIYE
-            'date_of_birth', 'bio', 'is_approved'
+            'user_type',
+            'photo',
+            'phone_number',
+            'college_name',
+            'branch',
+            'enrollment_number',
+            'qualification',
+            'experience_years',
+            'date_of_birth',
+            'bio',
+            'is_approved'
         ]
-        # Adding English error messages for other fields
-        extra_kwargs = {
-            'phone_number': {
-                'required': True, 
-                'error_messages': {"required": "Mobile number is required."}
-            },
-            'college_name': {
-                'required': True, 
-                'error_messages': {"required": "Please enter your college name."}
-            },
-            'first_name': {
-                'required': True,
-                'error_messages': {"required": "First name is required."}
-            }
-        }
+
+    def validate_enrollment_number(self, value):
+        if self.instance:
+            if Profile.objects.exclude(pk=self.instance.pk).filter(
+                enrollment_number=value
+            ).exists():
+                raise serializers.ValidationError(
+                    "This enrollment number is already registered. Please use a unique one."
+                )
+        else:
+            if Profile.objects.filter(enrollment_number=value).exists():
+                raise serializers.ValidationError(
+                    "This enrollment number is already registered. Please use a unique one."
+                )
+
+        return value
 
 class UserSerializer(serializers.ModelSerializer):
-    # 🚀 'read_only=True' hata diya taaki update ho sake
-    profile = ProfileSerializer() 
+
+    profile = ProfileSerializer(read_only=True)
     profile_photo = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'first_name', 'last_name', 'email', 'profile', 'profile_photo']
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "profile",
+            "profile_photo",
+        ]
 
-    def update(self, instance, validated_data):
-        # 1. Profile ka data alag nikalo
-        profile_data = validated_data.pop('profile', None)
-        
-        # 2. User (first_name, last_name) update karo
-        instance.first_name = validated_data.get('first_name', instance.first_name)
-        instance.last_name = validated_data.get('last_name', instance.last_name)
-        instance.save()
+    def get_profile_photo(self, obj):
+        request = self.context.get("request")
 
-        # 3. Profile update karo (experience_years, bio, etc.)
-        if profile_data:
-            profile = instance.profile
-            for attr, value in profile_data.items():
-                setattr(profile, attr, value)
-            profile.save()
-            
-        return instance
+        if hasattr(obj, "profile") and obj.profile.photo:
+            if request:
+                return request.build_absolute_uri(obj.profile.photo.url)
+            return obj.profile.photo.url
 
-    def get_profile_photo(self, request_obj):
-        request = self.context.get('request')
-        if hasattr(request_obj, 'profile') and request_obj.profile.photo:
-            photo_url = request_obj.profile.photo.url
-            return request.build_absolute_uri(photo_url) if request else photo_url
         return None
 
 class LessonSerializer(serializers.ModelSerializer):

@@ -262,6 +262,7 @@ class Profile(models.Model):
     # ✅ NAYE FIELDS FOR VERIFICATION & GOOGLE LOGIN
     is_email_verified = models.BooleanField(default=False)
     email_verification_token = models.CharField(max_length=100, blank=True, null=True)
+    token_created_at = models.DateTimeField(null=True, blank=True)
     google_id = models.CharField(max_length=255, blank=True, null=True) # Google user identification
     auth_provider = models.CharField(max_length=50, default='email') # 'email' or 'google'
 
